@@ -7,5 +7,8 @@ devtools::install_github("hc3292/HowOften2023")
 
 library("SqlRender")
 library("DatabaseConnector")
-library("Covid19VaccineAesiIncidenceCharacterization")
+library("HowOften2023")
+
+
+
 
