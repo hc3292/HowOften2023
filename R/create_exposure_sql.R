@@ -8,7 +8,7 @@
 #' @export
 #'
 #' @examples
-# create_exposure_sql(8941340, "testdrug")
+#' create_exposure_sql(8941340, "testdrug")
 create_exposure_sql <- function(concept_id, concept_name,
                                 filepath = "~/HowOften2023/inst/sql/sql_server/target/"){
 

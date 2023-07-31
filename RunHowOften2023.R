@@ -36,6 +36,103 @@ readCsv <- function(resourceFile, packageName = getThisPackageName(), col_types 
   return(fileContents)
 }
 
+# required for making outcome cohorts
+computeChecksum <- function(column) {
+  return(sapply(as.character(column), digest::digest, algo = "md5", serialize = FALSE))
+}
+
+# required for making outcome cohorts
+isTaskRequired <- function(..., checksum, recordKeepingFile, verbose = TRUE) {
+  if (file.exists(recordKeepingFile)) {
+    recordKeeping <- readr::read_csv(recordKeepingFile, col_types = readr::cols())
+    task <- recordKeeping[getKeyIndex(list(...), recordKeeping), ]
+    if (nrow(task) == 0) {
+      return(TRUE)
+    }
+    if (nrow(task) > 1) {
+      stop("Duplicate key ", as.character(list(...)), " found in recordkeeping table")
+    }
+    if (task$checksum == checksum) {
+      if (verbose) {
+        key <- list(...)
+        key <- paste(sprintf("%s = '%s'", names(key), key), collapse = ", ")
+        ParallelLogger::logInfo("Skipping ", key, " because unchanged from earlier run")
+      }
+      return(FALSE)
+    } else {
+      return(TRUE)
+    }
+  } else {
+    return(TRUE)
+  }
+}
+
+getKeyIndex <- function(key, recordKeeping) {
+  if (nrow(recordKeeping) == 0 || length(key[[1]]) == 0 || !all(names(key) %in% names(recordKeeping))) {
+    return(c())
+  } else {
+    key <- unique(tibble::as_tibble(key))
+    recordKeeping$idxCol <- 1:nrow(recordKeeping)
+    idx <- merge(recordKeeping, key)$idx
+    return(idx)
+  }
+}
+
+recordTasksDone <- function(..., checksum, recordKeepingFile, incremental = TRUE) {
+  if (!incremental) {
+    return()
+  }
+  if (length(list(...)[[1]]) == 0) {
+    return()
+  }
+  if (file.exists(recordKeepingFile)) {
+    recordKeeping <- readr::read_csv(recordKeepingFile, col_types = readr::cols())
+    idx <- getKeyIndex(list(...), recordKeeping)
+    if (length(idx) > 0) {
+      recordKeeping <- recordKeeping[-idx, ]
+    }
+  } else {
+    recordKeeping <- tibble::tibble()
+  }
+  newRow <- tibble::as_tibble(list(...))
+  newRow$checksum <- checksum
+  newRow$timeStamp <- Sys.time()
+  recordKeeping <- dplyr::bind_rows(recordKeeping, newRow)
+  readr::write_csv(recordKeeping, recordKeepingFile)
+}
+
+insertRefEntries <- function(connection, sqlFile, cohortDatabaseSchema, tableName, tempEmulationSchema, ...) {
+  sql <- SqlRender::loadRenderTranslateSql(sqlFile,
+                                           packageName = "Covid19VaccineAesiIncidenceCharacterization",
+                                           dbms = "sql server",
+                                           tempEmulationSchema = NULL,
+                                           warnOnMissingParameters = TRUE,
+                                           cohort_database_schema = cohortDatabaseSchema,
+                                           ref_table = tableName,
+                                           ...)
+  DatabaseConnector::executeSql(connection = connect(connectionDetails),
+                                sql = sql,
+                                progressBar = FALSE,
+                                reportOverallTime = FALSE)
+}
+
+
+# not read in yet
+saveIncremental <- function(data, fileName, ...) {
+  if (length(list(...)[[1]]) == 0) {
+    return()
+  }
+  if (file.exists(fileName)) {
+    previousData <- readr::read_csv(fileName, col_types = readr::cols())
+    idx <- getKeyIndex(list(...), previousData)
+    if (length(idx) > 0) {
+      previousData <- previousData[-idx, ]
+    }
+    data <- dplyr::bind_rows(previousData, data)
+  }
+  readr::write_csv(data, fileName)
+}
+
 ###################################################################################
 ###################################################################################
 ################## CREATE TABLE OF SQL FILE OF DRUG EXPOSURES #####################
@@ -128,7 +225,7 @@ outcome_first_dx$primaryTimeAtRiskStartOffset = 1
 outcome_first_dx$primaryTimeAtRiskStartIndex = 0
 outcome_first_dx$primaryTimeAtRiskEndOffset = 30
 outcome_first_dx$primaryTimeAtRiskEndIndex = 0
-
+outcome_first_dx$excludedCohortDefinitionId = 0
 
 # save it as a file called targetRef.csv
 write.csv(outcome_first_dx, "~/HowOften2023/inst/settings/outcomeRef.csv", quote = F, row.names = F)
@@ -195,7 +292,7 @@ outcomeCohorts <- readCsv("/settings/outcomeRef.csv")
 timeAtRisk <- readCsv("/settings/timeAtRisk.csv")
 
 ## FOR TESTING PURPOSES: take subset of each thing
-targetCohorts = targetCohorts[1:100,]
+targetCohorts = targetCohorts[1:1000,]
 outcomeCohorts = outcomeCohorts[1:100,]
 
 instantiatedTargetCohortIds <- c()
@@ -208,7 +305,7 @@ tempEmulationSchema = "ohdsi_cumc_2022q4r1.dbo"
 connection = connect(connectionDetails)
 
 # create cohort table for target cohorts
-instantiatedTargetCohortIds <- HowOften2023::instantiateCohortSet(connectionDetails = connectionDetails,
+instantiatedTargetCohortIds <- instantiateCohortSet(connectionDetails = connectionDetails,
                                                     connection = connect(connectionDetails),
                                                     cdmDatabaseSchema = cdmDatabaseSchema,
                                                     tempEmulationSchema = tempEmulationSchema,
@@ -296,19 +393,79 @@ if (nrow(timeAtRisk) > 0) {
 
 library("CohortIncidence")
 
+targetIDs = targetCohorts$cohortId
+outcomeIDs = outcomeCohorts$outcomeId
+tarIDs = c(1,2)
 
-insertRefEntries <- function(connection, sqlFile, cohortDatabaseSchema, tableName, tempEmulationSchema, ...) {
-  sql <- SqlRender::loadRenderTranslateSql(sqlFile,
-                                           packageName = getThisPackageName(),
-                                           dbms = "sql server",
-                                           tempEmulationSchema = NULL,
-                                           warnOnMissingParameters = TRUE,
-                                           cohort_database_schema = cohortDatabaseSchema,
-                                           ref_table = tableName,
-                                           ...)
-  DatabaseConnector::executeSql(connection = connect(connectionDetails),
-                                sql = sql,
-                                progressBar = FALSE,
-                                reportOverallTime = FALSE)
+# target ref
+target_ref_list = list()
+for (i in 1:length(targetIDs)){
+  selectedrow = targetCohorts[which(targetCohorts$cohortId==targetIDs[i]),]
+  t = CohortIncidence::createCohortRef(id=selectedrow$cohortId,
+                                       name=selectedrow$cohortName)
+  target_ref_list = append(target_ref_list,t)
 }
 
+# outcome ref
+outcome_ref_list = list()
+for (i in 1:length(outcomeIDs)){
+  selectedrow = outcomeCohorts[which(outcomeCohorts$outcomeId==outcomeIDs[i]),]
+  t = CohortIncidence::createOutcomeDef(id=selectedrow$outcomeId,
+                                        name=selectedrow$outcomeName,
+                                        cohortId = selectedrow$outcomeCohortDefinitionId,
+                                        cleanWindow = selectedrow$cleanWindow)
+  outcome_ref_list = append(outcome_ref_list, t)
+}
+
+# tar
+tar_ref_list = list()
+for (i in 1:length(tarIDs)){
+  selectedrow = timeAtRisk[which(timeAtRisk$time_at_risk_id==tarIDs[i]),]
+  t = CohortIncidence::createTimeAtRiskDef(id=selectedrow$time_at_risk_id,
+                                           startWith= "start",
+                                           startOffset = selectedrow$time_at_risk_start_offset,
+                                           endWith= "end",
+                                           endOffset=selectedrow$time_at_risk_end_offset)
+  tar_ref_list = append(tar_ref_list, t)
+}
+
+
+
+# define analysis
+analysis1 <- CohortIncidence::createIncidenceAnalysis(targets = targetIDs[1:100],
+                                                      outcomes = outcomeIDs[1:100],
+                                                      tars = tarIDs)
+
+# Create Design (note use of list() here):
+irDesign <- CohortIncidence::createIncidenceDesign(targetDefs = target_ref_list[1:100],
+                                                   outcomeDefs = outcome_ref_list[1:100],
+                                                   tars=tar_ref_list,
+                                                   analysisList = list(analysis1))
+
+resultsDatabaseSchema = "ohdsi_cumc_2022q4r1.results"
+
+buildOptions <- CohortIncidence::buildOptions(cohortTable = "ohdsi_cumc_2022q4r1.dbo.HowOften_target",
+                                              outcomeCohortTable = "ohdsi_cumc_2022q4r1.dbo.HowOften_outcome",
+                                              sourceName = "Columbia",
+                                              cdmDatabaseSchema = cohortDatabaseSchema,
+                                              resultsDatabaseSchema = resultsDatabaseSchema,
+                                              vocabularySchema = cohortDatabaseSchema,
+                                              useTempTables = F,
+                                              refId = 1)
+
+
+# if you do want to dump the results in the database, run this
+analysisSql <- CohortIncidence::buildQuery(incidenceDesign =  as.character(irDesign$asJSON()),
+                                           buildOptions = buildOptions)
+DatabaseConnector::disconnect(con)
+con <- DatabaseConnector::connect(connectionDetails)
+DatabaseConnector::executeSql(con, analysisSql)
+
+
+# if you don't want this in the database, run this
+analysisSql <- CohortIncidence::buildQuery(incidenceDesign =  as.character(irDesign$asJSON()),
+                                           buildOptions = buildOptions)
+
+executeResults <- CohortIncidence::executeAnalysis(connectionDetails = connectionDetails,
+                                                   incidenceDesign = irDesign,
+                                                   buildOptions = buildOptions)

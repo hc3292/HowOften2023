@@ -19,11 +19,7 @@
 #' @description
 #' This function creates an empty cohort table. Optionally, additional empty tables are created to
 #' store statistics on the various inclusion criteria.
-#'
-#' @template Connection
-#'
-#' @template CohortTable
-#'
+
 #' @param createInclusionStatsTables   Create the four additional tables for storing inclusion rule
 #'                                     statistics?
 #' @param resultsDatabaseSchema        Schema name where the statistics tables reside. Note that for
@@ -67,18 +63,6 @@ createCohortTable <- function(connectionDetails = NULL,
 #' This function instantiates a set of cohort in the cohort table, using definitions that are fetched
 #' from a WebApi interface. Optionally, the inclusion rule statistics are computed and stored in the
 #' \code{inclusionStatisticsFolder}.
-#'
-#' @template Connection
-#'
-#' @template CohortTable
-#'
-#' @template TempEmulationSchema
-#'
-#' @template CdmDatabaseSchema
-#'
-#' @template CohortSetSpecs
-#'
-#' @template CohortSetReference
 #'
 #' @param cohortIds                   Optionally, provide a subset of cohort IDs to restrict the
 #'                                    construction to.
