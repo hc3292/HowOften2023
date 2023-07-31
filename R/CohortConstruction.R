@@ -50,7 +50,7 @@ createCohortTable <- function(connectionDetails = NULL,
     on.exit(DatabaseConnector::disconnect(connection))
   }
   sql <- SqlRender::loadRenderTranslateSql("CreateCohortTable.sql",
-                                           packageName = "HowOften2023",
+                                           packageName = getThisPackageName(),
                                            dbms = connection@dbms,
                                            cohort_database_schema = cohortDatabaseSchema,
                                            cohort_table = cohortTable)
@@ -140,7 +140,7 @@ instantiateCohortSet <- function(connectionDetails = NULL,
                              "sql_server",
                              cohortSqlFolder,
                              sqlFileName,
-                             package = "HowOften2023",
+                             package = getThisPackageName(),
                              mustWork = TRUE)
     sql <- readChar(pathToSql, file.info(pathToSql)$size)
     return(sql)

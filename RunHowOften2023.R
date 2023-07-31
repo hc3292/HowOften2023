@@ -3,19 +3,38 @@ library(devtools)
 # install_github("ohdsi/DatabaseConnector")  # these should already be installed so no need
 
 # this installs the package from github
-devtools::install_github("hc3292/HowOften2023")
+# devtools::install_github("hc3292/HowOften2023")
 
 library("devtools")
 library("SqlRender")
 library("DatabaseConnector")
-library("HowOften2023")
-library("CohortGenerator")
+# library("HowOften2023")
 
 connectionDetails <- createConnectionDetails(dbms= "sql server",
                                              server = "gem.dbmi.columbia.edu",
                                              user = "hc3292",
                                              password = keyring::key_get("sql server", "hc3292"),
                                              port="1433")
+
+### FUNCTIONS -- RUN THESE FIRST
+
+# clean up the table (underscores and colons will not work in the create sql function)
+replace_non_alphanumeric_with_underscore <- function(column_data) {
+  cleaned_column <- gsub("[^[:alnum:]]", "_", column_data)
+  return(cleaned_column)
+}
+
+getThisPackageName <- function() {
+  return("HowOften2023")
+}
+
+
+readCsv <- function(resourceFile, packageName = getThisPackageName(), col_types = readr::cols()) {
+  packageName <- getThisPackageName()
+  pathToCsv <- system.file(resourceFile, package = packageName, mustWork = TRUE)
+  fileContents <- readr::read_csv(pathToCsv, col_types = col_types)
+  return(fileContents)
+}
 
 ###################################################################################
 ###################################################################################
@@ -25,7 +44,7 @@ connectionDetails <- createConnectionDetails(dbms= "sql server",
 
 rx_norms_list_sql = SqlRender::loadRenderTranslateSql(
   "define_exposure_cohorts.sql",
-  "HowOften2023",
+  getThisPackageName(),
   dbms = "sql server",
   results_database_schema = "ohdsi_cumc_2022q4r1.results",
   cdm_database_schema = "ohdsi_cumc_2022q4r1.dbo"
@@ -44,11 +63,7 @@ exposure_cohort = querySql(
   snakeCaseToCamelCase = FALSE
 )
 
-# clean up the table (underscores and colons will not work in the create sql function)
-replace_non_alphanumeric_with_underscore <- function(column_data) {
-  cleaned_column <- gsub("[^[:alnum:]]", "_", column_data)
-  return(cleaned_column)
-}
+
 # Apply the function to the column with non-alphanumeric characters
 exposure_cohort$COHORT_NAME <- replace_non_alphanumeric_with_underscore(exposure_cohort$COHORT_NAME)
 
@@ -73,7 +88,7 @@ write.csv(exposure_cohort, "~/HowOften2023/inst/settings/targetRef.csv", quote =
 
 outcomes_list_sql = SqlRender::loadRenderTranslateSql(
   "define_outcome_cohorts.sql",
-  "HowOften2023",
+  packageName = getThisPackageName(),
   dbms = "sql server",
   results_database_schema = "ohdsi_cumc_2022q4r1.results",
   cdm_database_schema = "ohdsi_cumc_2022q4r1.dbo"
@@ -81,6 +96,7 @@ outcomes_list_sql = SqlRender::loadRenderTranslateSql(
 
 DatabaseConnector::disconnect(con)
 con <- DatabaseConnector::connect(connectionDetails)
+
 # this creates the IR_exposure_cohort table
 DatabaseConnector::executeSql(con,outcomes_list_sql)
 
@@ -103,9 +119,9 @@ result_vector <- mapply(create_outcome_sql, outcome_first_dx$CONCEPT_ID, outcome
 # append the names of the sql files to the exposure_cohort table
 outcome_first_dx$fileName = paste0(replace_non_alphanumeric_with_underscore(outcome_first_dx$COHORT_NAME), ".sql")
 # generate a HowOftenID
-outcome_first_dx$cohortId = c( (nrow(exposure_cohort) + 1): ((nrow(exposure_cohort) + nrow(outcome_first_dx))))
+outcome_first_dx$outcomeId = c( (nrow(exposure_cohort) + 1): ((nrow(exposure_cohort) + nrow(outcome_first_dx))))
 # generate cohortName column
-outcome_first_dx$cohortName = outcome_first_dx$COHORT_NAME
+outcome_first_dx$outcomeName = outcome_first_dx$COHORT_NAME
 outcome_first_dx$outcomeCohortDefinitionId = outcome_first_dx$cohortId
 outcome_first_dx$cleanWindow = 0 #idk if we need this
 outcome_first_dx$primaryTimeAtRiskStartOffset = 1
@@ -154,7 +170,7 @@ timeAtRiskTable = paste0(cohortTablePrefix, "_time_at_risk")
 summaryTable = paste0(cohortTablePrefix, "_ir_summary")
 
 createRefTablesSql <- SqlRender::loadRenderTranslateSql("CreateRefTables.sql",
-                                                        packageName = "Covid19VaccineAesiIncidenceCharacterization",
+                                                        packageName = getThisPackageName(),
                                                         dbms = "sql server",
                                                         tempEmulationSchema = NULL,
                                                         warnOnMissingParameters = TRUE,
@@ -173,10 +189,14 @@ DatabaseConnector::executeSql(connection = connect(connectionDetails),
 
 ## instantiate cohorts
 
-targetCohorts <- readCsv("inst/settings/targetRef.csv")
+targetCohorts <- readCsv("/settings/targetRef.csv")
 # subgroupCohorts <- readCsv("settings/subgroupRef.csv") # ignore for now
-outcomeCohorts <- readCsv("inst/settings/outcomeRef.csv")
-timeAtRisk <- readCsv("inst/settings/timeAtRisk.csv")
+outcomeCohorts <- readCsv("/settings/outcomeRef.csv")
+timeAtRisk <- readCsv("/settings/timeAtRisk.csv")
+
+## FOR TESTING PURPOSES: take subset of each thing
+targetCohorts = targetCohorts[1:100,]
+outcomeCohorts = outcomeCohorts[1:100,]
 
 instantiatedTargetCohortIds <- c()
 
@@ -187,8 +207,8 @@ cdmDatabaseSchema = "ohdsi_cumc_2022q4r1.dbo"
 tempEmulationSchema = "ohdsi_cumc_2022q4r1.dbo"
 connection = connect(connectionDetails)
 
-
-instantiatedTargetCohortIds <- instantiateCohortSet(connectionDetails = connectionDetails,
+# create cohort table for target cohorts
+instantiatedTargetCohortIds <- HowOften2023::instantiateCohortSet(connectionDetails = connectionDetails,
                                                     connection = connect(connectionDetails),
                                                     cdmDatabaseSchema = cdmDatabaseSchema,
                                                     tempEmulationSchema = tempEmulationSchema,
@@ -199,3 +219,96 @@ instantiatedTargetCohortIds <- instantiateCohortSet(connectionDetails = connecti
                                                     createCohortTable = TRUE,
                                                     incremental = incremental,
                                                     incrementalFolder = incrementalFolder)
+# create the ref table
+for (i in 1:nrow(targetCohorts)) {
+  insertRefEntries(connection = connection,
+                   sqlFile = "InsertTargetRef.sql",
+                   cohortDatabaseSchema = cohortDatabaseSchema,
+                   tableName = targetRefTable,
+                   target_cohort_definition_id = targetCohorts$cohortId[i],
+                   target_name = targetCohorts$cohortName[i])
+}
+
+
+## outcome cohorts
+if (nrow(outcomeCohorts) > 0) {
+  # The outcome ref file is a little different from the others
+  # so this step aims to normalize it to the other format of
+  # cohortId, cohortName, fileName
+  outcomeCohortsToCreate <- outcomeCohorts[,c("outcomeId", "outcomeName", "fileName")]
+  names(outcomeCohortsToCreate) <- c("cohortId", "cohortName", "fileName")
+
+  ParallelLogger::logInfo("**********************************************************")
+  ParallelLogger::logInfo("  ---- Creating outcome cohorts ---- ")
+  ParallelLogger::logInfo("**********************************************************")
+  instantiateCohortSet(connectionDetails = connectionDetails,
+                       connection = connect(connectionDetails),
+                       cdmDatabaseSchema = cdmDatabaseSchema,
+                       tempEmulationSchema = tempEmulationSchema,
+                       cohortDatabaseSchema = cohortDatabaseSchema,
+                       cohortTable = outcomeCohortTable,
+                       cohorts = outcomeCohortsToCreate,
+                       cohortSqlFolder = "outcome",
+                       createCohortTable = TRUE,
+                       incremental = incremental,
+                       incrementalFolder = incrementalFolder)
+
+  # Populate ref table
+  ParallelLogger::logInfo("Insert outcome reference")
+  for (i in 1:nrow(outcomeCohorts)) {
+    insertRefEntries(connection = connection,
+                     sqlFile = "InsertOutcomeRef.sql",
+                     cohortDatabaseSchema = cohortDatabaseSchema,
+                     tableName = outcomeRefTable,
+                     outcome_id = outcomeCohorts$outcomeId[i],
+                     outcome_cohort_definition_id = outcomeCohorts$outcomeCohortDefinitionId[i],
+                     outcome_name = outcomeCohorts$outcomeName[i],
+                     clean_window = outcomeCohorts$cleanWindow[i],
+                     primary_time_at_risk_start_offset = outcomeCohorts$primaryTimeAtRiskStartOffset[i],
+                     primary_time_at_risk_start_index = outcomeCohorts$primaryTimeAtRiskStartIndex[i],
+                     primary_time_at_risk_end_offset = outcomeCohorts$primaryTimeAtRiskEndOffset[i],
+                     primary_time_at_risk_end_index = outcomeCohorts$primaryTimeAtRiskEndIndex[i],
+                     excluded_cohort_definition_id = outcomeCohorts$excludedCohortDefinitionId[i])
+  }
+}
+
+## time at risk
+if (nrow(timeAtRisk) > 0) {
+  ParallelLogger::logInfo("Insert time at risk reference")
+  for (i in 1:nrow(timeAtRisk)) {
+    insertRefEntries(connection = connection,
+                     sqlFile = "InsertTimeAtRiskRef.sql",
+                     cohortDatabaseSchema = cohortDatabaseSchema,
+                     tableName = timeAtRiskTable,
+                     time_at_risk_id = timeAtRisk$time_at_risk_id[i],
+                     time_at_risk_start_offset = timeAtRisk$time_at_risk_start_offset[i],
+                     time_at_risk_start_index = timeAtRisk$time_at_risk_start_index[i],
+                     time_at_risk_end_offset = timeAtRisk$time_at_risk_end_offset[i],
+                     time_at_risk_end_index = timeAtRisk$time_at_risk_end_index[i])
+  }
+}
+
+###########################################################################
+###########################################################################
+######################### SET UP ANALYSIS #################################
+###########################################################################
+###########################################################################
+
+library("CohortIncidence")
+
+
+insertRefEntries <- function(connection, sqlFile, cohortDatabaseSchema, tableName, tempEmulationSchema, ...) {
+  sql <- SqlRender::loadRenderTranslateSql(sqlFile,
+                                           packageName = getThisPackageName(),
+                                           dbms = "sql server",
+                                           tempEmulationSchema = NULL,
+                                           warnOnMissingParameters = TRUE,
+                                           cohort_database_schema = cohortDatabaseSchema,
+                                           ref_table = tableName,
+                                           ...)
+  DatabaseConnector::executeSql(connection = connect(connectionDetails),
+                                sql = sql,
+                                progressBar = FALSE,
+                                reportOverallTime = FALSE)
+}
+
